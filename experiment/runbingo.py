@@ -6,7 +6,6 @@ from collections import namedtuple
 
 Cell = namedtuple('Cell', ['category', 'number', 'marked', 'shared_interests'], defaults=(False, None))
 
-SHEET_CREATION_TRIAL = 40
 
 class Sheet:
     CATEGORIES = ('STAR', 'CIRCLE', 'BOX', 'TRI')
@@ -26,17 +25,39 @@ class Sheet:
         return [[self._cells[r * self._size + c] for r in range(self._size)]
                 for c in range(self._size)]
 
+    def dump(self):
+        out = []
+        for r in range(self._size):
+            out.append(' '.join([c.category[0] + f'{c.number:02}' for c in self._cells[r * self._size : (r + 1) * self._size]]))
+        return '\n'.join(out)
 
 def create_sheet(sheet_number, size):
-    numbers = [i + 1 for i in range(size * size) if i + 1 != sheet_number]
-    random.shuffle(numbers)
-    numbers = numbers[:int(size * size / 2)] + [sheet_number] + numbers[int(size * size / 2):]
-    categories = shuffled_categories(size)
-    cells = [Cell(categories.pop(0), numbers.pop(0), False, []) for i in range(size * size)]
-    return Sheet(sheet_number, cells)
+    while True:
+        numbers = [i + 1 for i in range(size * size) if i + 1 != sheet_number]
+        random.shuffle(numbers)
+        numbers = numbers[:int(size * size / 2)] + [sheet_number] + numbers[int(size * size / 2):]
 
+        categories = shuffled_categories(size)
+        cells = [Cell(categories.pop(0), numbers.pop(0), False, []) for i in range(size * size)]
+
+        candidate = Sheet(sheet_number, cells)
+        if all([is_category_distributed(line) for line in candidate.columns() + candidate.rows()]):
+            return candidate
 
 def shuffled_categories(size):
+    # return shuffled_categories_by_weight(size)
+    # return shuffled_categories_by_random(size)
+    return shuffled_categories_by_placing(size)
+
+
+def shuffled_categories_by_random(size):
+    categories = list(Sheet.CATEGORIES * int(size * size / len(Sheet.CATEGORIES) + 1))[:size * size]
+    random.shuffle(categories)
+    return categories
+
+
+def shuffled_categories_by_weight(size):
+    SHEET_CREATION_TRIAL = 10
     categories = list(Sheet.CATEGORIES * int(size * size / len(Sheet.CATEGORIES) + 1))[:size * size]
     random.shuffle(categories)
     distributed = [None] * (size * size)
@@ -51,6 +72,33 @@ def shuffled_categories(size):
         best_loc = sorted(trys, key=lambda v: v[1])[0][0]
         # print(f'best: {best_loc}, trys: {trys}, available: {available}')
         distributed[best_loc] = c
+    return distributed
+
+
+def shuffled_categories_by_placing(size):
+    '''
+    各カテゴリを各列と行に1個ずつ置いた上で
+    あとを詰めていく
+    '''
+    distributed = [None] * (size * size)
+    for category in Sheet.CATEGORIES:
+        cols = list(range(size))
+        random.shuffle(cols)
+        for r in range(size):
+            c = cols[r]
+            if distributed[r * size + c]:
+                available = [cc for cc in range(size) if distributed[r * size + cc] is None]
+                if not available:
+                    break
+                c = random.choice(available)
+            distributed[r * size + c] = category
+
+    open_cells = len([c for c in distributed if c is None])
+    filling_categories = list(Sheet.CATEGORIES * int(open_cells / len(Sheet.CATEGORIES) + 1))[:open_cells]
+    random.shuffle(filling_categories)
+    for i in range(len(distributed)):
+        if distributed[i] is None:
+            distributed[i] = filling_categories.pop(0)
     return distributed
 
 
@@ -89,6 +137,19 @@ def eval_category_distribution(categories):
     return ((len(Sheet.CATEGORIES) - len(count)) * LACKING_CATEGORY_WEIGHT +
             (max(count.values()) - min(count.values())) * UNEVEN_CATEGORIES_WEIGHT)
 
+
+def is_category_distributed(cells):
+    categories = dict()
+    for c in cells:
+        categories[c.category] = categories.get(c.category, 0) + 1
+    # evaluation = (len(categories) == len(Sheet.CATEGORIES) and
+    #               max(categories.values()) - min(categories.values()) <= 1)
+    evaluation = len(categories) == len(Sheet.CATEGORIES)
+    # if not evaluation:
+    #     print(f'uneven categories: {categories}')
+    return evaluation
+
+
 import pytest
 
 
@@ -102,18 +163,7 @@ def sheet2():
 
 @pytest.fixture
 def many_sheets():
-    return [create_sheet(10, 7) for i in range(50)]
-
-
-def is_category_distributed(cells):
-    categories = dict()
-    for c in cells:
-        categories[c.category] = categories.get(c.category, 0) + 1
-    evaluation = (len(categories) == 4 and
-                  max(categories.values()) - min(categories.values()) <= 1)
-    if not evaluation:
-        print(f'uneven categories: {categories}')
-    return evaluation
+    return [create_sheet(i + 1, 7) for i in range(50)]
 
 
 class TestSheet:
@@ -152,7 +202,14 @@ class TestSheet:
             for sheet in many_sheets:
                 assert is_category_distributed(sheet._cells)
 
-        def test_番号が分散する(self, many_sheets):
+        def test_カテゴリがランダムに配置される(self, many_sheets):
+            category_positions = set()
+            for sheet in many_sheets:
+                for i, c in enumerate(sheet._cells):
+                    category_positions.add((i, c.category))
+            assert len(category_positions) >= (7 * 7) * len(Sheet.CATEGORIES) * 0.9, 'カテゴリと登場箇所の組み合わせがほぼユニークになること'
+
+        def test_番号がランダムに配置される(self, many_sheets):
             number_positions = set()
             for sheet in many_sheets:
                 for i, c in enumerate(sheet._cells):
@@ -164,9 +221,8 @@ class TestSheet:
             for sheet in many_sheets:
                 for line in sheet.columns() + sheet.rows():
                     if not is_category_distributed(line):
+                        print(sheet.dump())
                         invalid_count += 1
                         break
-            assert invalid_count < len(many_sheets) * 0.1
+            assert invalid_count == 0
 
-def test_shuffled_categories():
-    sut = shuffled_categories(3)
